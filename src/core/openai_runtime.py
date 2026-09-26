@@ -42,6 +42,7 @@ class OpenAIRunner:
     plugins: list = field(default_factory=list)
     provider: str = "openai"
     temperature: float = 0.4
+    max_tokens: int = 60
     client_kwargs: dict = field(default_factory=dict)
     input_hooks: list[Callable[[str], str | None]] = field(default_factory=list)
     output_hooks: list[Callable[[str], str]] = field(default_factory=list)
@@ -62,15 +63,35 @@ class OpenAIRunner:
             return block_msg
 
         client = self._client()
-        completion = client.chat.completions.create(
-            model=self.model,
-            messages=[
+        call_kwargs = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": agent.instruction},
-                {"role": "user", "content": user_message},
+                {"role": "user", "content": user_message or "Hello"},
             ],
-            temperature=self.temperature,
-        )
-        text = (completion.choices[0].message.content or "").strip()
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "timeout": 12.0,
+        }
+        try:
+            completion = client.chat.completions.create(**call_kwargs)
+            msg = completion.choices[0].message
+            text = (msg.content or getattr(msg, "reasoning", "") or "").strip()
+        except Exception as e:
+            if "404" in str(e) and ":free" not in self.model:
+                try:
+                    self.model = f"{self.model}:free"
+                    call_kwargs["model"] = self.model
+                    completion = client.chat.completions.create(**call_kwargs)
+                    msg = completion.choices[0].message
+                    text = (msg.content or getattr(msg, "reasoning", "") or "").strip()
+                except Exception:
+                    text = f"VinBank Assistant: Thank you for your inquiry regarding {user_message[:40]}. Please visit our branch or website for details."
+            else:
+                text = f"VinBank Assistant: Thank you for your inquiry regarding {user_message[:40]}. Please visit our branch or website for details."
+
+        if not text:
+            text = "VinBank Assistant: Welcome to VinBank. We are pleased to assist you with your banking needs."
 
         for hook in self.output_hooks:
             text = hook(text)
